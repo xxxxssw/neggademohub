@@ -1,0 +1,676 @@
+--[[
+    UNIVERSAL ESP SUITE v2.6
+    Chams - Box - Skeleton - Health - Name/Distance
+    Dual-layer chams: Metal inner + Neon glow outer
+    PointLight in each part for constant glow
+    All clones parented to Camera for through-wall
+    Luau ESP for Roblox - paste into your executor.
+--]]
+
+-------------------------------------------------
+-- SERVICES
+-------------------------------------------------
+local Players        = game:GetService("Players")
+local RunService     = game:GetService("RunService")
+local Camera         = workspace.CurrentCamera
+local LocalPlayer    = Players.LocalPlayer
+
+-------------------------------------------------
+-- SETTINGS (tweak these to your liking)
+-------------------------------------------------
+local Settings = {
+    Enabled         = true,
+
+    -- Modules
+    BoxESP          = true,
+    NameESP         = true,
+    DistanceESP     = true,
+    HealthESP       = true,
+    SkeletonESP     = true,
+    Chams           = true,
+
+    -- Appearance
+    BoxColor        = Color3.fromRGB(255, 50, 50),
+    BoxThickness    = 1.4,
+
+    NameColor       = Color3.fromRGB(255, 255, 255),
+    NameSize        = 14,
+
+    DistanceColor   = Color3.fromRGB(200, 200, 200),
+
+    HealthBarWidth  = 3,
+    HealthHigh      = Color3.fromRGB(0, 255, 0),
+    HealthLow       = Color3.fromRGB(255, 0, 0),
+
+    SkeletonColor   = Color3.fromRGB(255, 255, 255),
+    SkeletonThick   = 1.6,
+
+    -- Inner layer: Metal with reflectance
+    ChamsColor        = Color3.fromRGB(255, 0, 100),
+    ChamsTransparency = 0.2,
+    ChamsReflectance  = 1,
+
+    -- Outer glow layer: Neon aura around the metal
+    GlowColor         = Color3.fromRGB(255, 0, 100),
+    GlowTransparency  = 0.65,
+    GlowExpand         = 0.15,   -- how much bigger the glow is than the part
+
+    -- PointLight in each part for constant glow emission
+    GlowBrightness    = 2,
+    GlowRange         = 15,
+
+    MaxDistance      = 2500,
+    TeamCheck       = false,
+}
+
+-------------------------------------------------
+-- CHAMS CONTAINER
+-- Parented to Camera so everything renders
+-- through walls on the client side
+-------------------------------------------------
+local ChamsFolder = Instance.new("Folder")
+ChamsFolder.Name = "ESP_ChamsFolder"
+ChamsFolder.Parent = Camera
+
+-------------------------------------------------
+-- UTILITIES
+-------------------------------------------------
+local function worldToScreen(pos)
+    local vec, onScreen = Camera:WorldToViewportPoint(pos)
+    return Vector2.new(vec.X, vec.Y), onScreen
+end
+
+local function lerpColor(a, b, t)
+    return Color3.new(
+        a.R + (b.R - a.R) * t,
+        a.G + (b.G - a.G) * t,
+        a.B + (b.B - a.B) * t
+    )
+end
+
+local function isTeammate(player)
+    if not Settings.TeamCheck then return false end
+    return player.Team and player.Team == LocalPlayer.Team
+end
+
+-- Classes to strip from cloned parts
+local STRIP_SET = {}
+for _, name in ipairs({
+    "Decal", "Texture", "SurfaceGui", "BillboardGui",
+    "Script", "LocalScript", "ModuleScript", "Sound",
+    "JointInstance", "Motor6D", "Weld", "WeldConstraint",
+    "Constraint", "Attachment", "WrapLayer", "WrapTarget",
+    "Humanoid", "HumanoidDescription", "BodyColors",
+    "ShirtGraphic", "Shirt", "Pants", "CharacterMesh",
+    "ParticleEmitter", "Fire", "Smoke", "Sparkles",
+    "Trail", "Beam", "PointLight", "SpotLight",
+    "SurfaceLight", "ForceField",
+}) do
+    STRIP_SET[name] = true
+end
+
+local function shouldStrip(obj)
+    if STRIP_SET[obj.ClassName] then return true end
+    if obj:IsA("Decal") then return true end
+    if obj:IsA("Texture") then return true end
+    if obj:IsA("JointInstance") then return true end
+    if obj:IsA("Constraint") then return true end
+    if obj:IsA("Light") then return true end
+    return false
+end
+
+local function stripPart(part)
+    for _, child in ipairs(part:GetDescendants()) do
+        if shouldStrip(child) then
+            pcall(function() child:Destroy() end)
+        end
+    end
+    part.CastShadow = false
+    part.CanCollide = false
+    part.CanTouch   = false
+    part.CanQuery   = false
+    part.Anchored   = true
+end
+
+local function clonePart(original)
+    local ok, clone = pcall(function()
+        return original:Clone()
+    end)
+    if not ok or not clone then
+        local fallback = Instance.new("Part")
+        fallback.Size = original.Size
+        fallback.CFrame = original.CFrame
+        if original:IsA("MeshPart") and original.MeshId ~= "" then
+            local mesh = Instance.new("SpecialMesh")
+            mesh.MeshType = Enum.MeshType.FileMesh
+            mesh.MeshId = original.MeshId
+            mesh.Parent = fallback
+        end
+        return fallback
+    end
+    return clone
+end
+
+-------------------------------------------------
+-- DRAWING HELPERS
+-------------------------------------------------
+local function newLine(props)
+    local l      = Drawing.new("Line")
+    l.Visible    = false
+    l.Color      = props.Color or Color3.new(1,1,1)
+    l.Thickness  = props.Thickness or 1
+    l.Transparency = props.Transparency or 1
+    return l
+end
+
+local function newText(props)
+    local t      = Drawing.new("Text")
+    t.Visible    = false
+    t.Color      = props.Color or Color3.new(1,1,1)
+    t.Size       = props.Size or 14
+    t.Center     = true
+    t.Outline    = true
+    t.OutlineColor = Color3.new(0,0,0)
+    t.Font       = Drawing.Fonts.Plex
+    return t
+end
+
+-------------------------------------------------
+-- ESP OBJECT (one per player)
+-------------------------------------------------
+local ESPObject = {}
+ESPObject.__index = ESPObject
+
+function ESPObject.new(player)
+    local self = setmetatable({}, ESPObject)
+    self.Player = player
+
+    self.Box = {}
+    for i = 1, 4 do
+        self.Box[i] = newLine({ Color = Settings.BoxColor, Thickness = Settings.BoxThickness })
+    end
+
+    self.HealthBG  = newLine({ Color = Color3.new(0,0,0), Thickness = Settings.HealthBarWidth + 2 })
+    self.HealthBar = newLine({ Color = Settings.HealthHigh, Thickness = Settings.HealthBarWidth })
+    self.Name = newText({ Color = Settings.NameColor, Size = Settings.NameSize })
+    self.Distance = newText({ Color = Settings.DistanceColor, Size = 12 })
+
+    self.Skeleton = {}
+    for i = 1, 12 do
+        self.Skeleton[i] = newLine({ Color = Settings.SkeletonColor, Thickness = Settings.SkeletonThick })
+    end
+
+    -- Dual layer chams
+    -- MetalParts: original part -> metal clone
+    -- GlowParts:  original part -> neon glow clone
+    self.MetalParts = {}
+    self.GlowParts  = {}
+    self.ChamsModel = nil
+
+    return self
+end
+
+local BONES_R15 = {
+    {"Head",              "UpperTorso"},
+    {"UpperTorso",        "LowerTorso"},
+    {"UpperTorso",        "LeftUpperArm"},
+    {"LeftUpperArm",      "LeftLowerArm"},
+    {"LeftLowerArm",      "LeftHand"},
+    {"UpperTorso",        "RightUpperArm"},
+    {"RightUpperArm",     "RightLowerArm"},
+    {"RightLowerArm",     "RightHand"},
+    {"LowerTorso",        "LeftUpperLeg"},
+    {"LeftUpperLeg",      "LeftLowerLeg"},
+    {"LowerTorso",        "RightUpperLeg"},
+    {"RightUpperLeg",     "RightLowerLeg"},
+}
+
+local BONES_R6 = {
+    {"Head",            "Torso"},
+    {"Torso",           "Left Arm"},
+    {"Torso",           "Right Arm"},
+    {"Torso",           "Left Leg"},
+    {"Torso",           "Right Leg"},
+}
+
+function ESPObject:GetBones(char)
+    if char:FindFirstChild("UpperTorso") then
+        return BONES_R15
+    end
+    return BONES_R6
+end
+
+-------------------------------------------------
+-- SKIP LIST
+-------------------------------------------------
+local SKIP_PARTS = {
+    HumanoidRootPart = true,
+}
+
+function ESPObject:GetCharacterParts(char)
+    local parts = {}
+    for _, part in ipairs(char:GetDescendants()) do
+        if part:IsA("BasePart") and not SKIP_PARTS[part.Name] then
+            table.insert(parts, part)
+        end
+    end
+    return parts
+end
+
+-------------------------------------------------
+-- DUAL LAYER CHAMS
+-- Layer 1: Metal clone (exact size, reflective)
+-- Layer 2: Neon clone (slightly bigger, glow aura)
+-- Each metal clone has a PointLight for emission
+-- All inside Camera folder = through walls
+-------------------------------------------------
+function ESPObject:CreateMetalClone(original)
+    local clone = clonePart(original)
+    if not clone then return nil end
+    stripPart(clone)
+    clone.Material     = Enum.Material.Metal
+    clone.Color        = Settings.ChamsColor
+    clone.Transparency = Settings.ChamsTransparency
+    clone.Reflectance  = Settings.ChamsReflectance
+    clone.CFrame       = original.CFrame
+
+    -- Add a PointLight for constant glow emission
+    local light = Instance.new("PointLight")
+    light.Color      = Settings.GlowColor
+    light.Brightness = Settings.GlowBrightness
+    light.Range      = Settings.GlowRange
+    light.Shadows    = false
+    light.Parent     = clone
+
+    return clone
+end
+
+function ESPObject:CreateGlowClone(original)
+    local clone = clonePart(original)
+    if not clone then return nil end
+    stripPart(clone)
+    clone.Material     = Enum.Material.Neon
+    clone.Color        = Settings.GlowColor
+    clone.Transparency = Settings.GlowTransparency
+    clone.Reflectance  = 0
+
+    -- Scale up slightly for the glow aura effect
+    local expand = Vector3.new(
+        Settings.GlowExpand,
+        Settings.GlowExpand,
+        Settings.GlowExpand
+    )
+    clone.Size    = original.Size + expand
+    clone.CFrame  = original.CFrame
+
+    return clone
+end
+
+function ESPObject:BuildChamsModel(char)
+    self:DestroyChamsModel()
+
+    local model = Instance.new("Model")
+    model.Name = "Chams_" .. self.Player.Name
+    self.ChamsModel = model
+    self.MetalParts = {}
+    self.GlowParts  = {}
+
+    local parts = self:GetCharacterParts(char)
+    for _, part in ipairs(parts) do
+        -- Metal inner layer
+        local metal = self:CreateMetalClone(part)
+        if metal then
+            metal.Parent = model
+            self.MetalParts[part] = metal
+        end
+
+        -- Neon glow outer layer
+        local glow = self:CreateGlowClone(part)
+        if glow then
+            glow.Parent = model
+            self.GlowParts[part] = glow
+        end
+    end
+
+    model.Parent = ChamsFolder
+end
+
+function ESPObject:UpdateChamsModel(char)
+    if not self.ChamsModel or not self.ChamsModel.Parent then
+        self:BuildChamsModel(char)
+        return
+    end
+
+    local currentParts = {}
+    local charParts = self:GetCharacterParts(char)
+    for _, part in ipairs(charParts) do
+        currentParts[part] = true
+    end
+
+    -- Add new parts
+    for part, _ in pairs(currentParts) do
+        if not self.MetalParts[part] then
+            local metal = self:CreateMetalClone(part)
+            if metal then
+                metal.Parent = self.ChamsModel
+                self.MetalParts[part] = metal
+            end
+        end
+        if not self.GlowParts[part] then
+            local glow = self:CreateGlowClone(part)
+            if glow then
+                glow.Parent = self.ChamsModel
+                self.GlowParts[part] = glow
+            end
+        end
+    end
+
+    local expand = Vector3.new(
+        Settings.GlowExpand,
+        Settings.GlowExpand,
+        Settings.GlowExpand
+    )
+
+    -- Update metal clones
+    for original, clone in pairs(self.MetalParts) do
+        if not original or not original.Parent then
+            clone:Destroy()
+            self.MetalParts[original] = nil
+        else
+            clone.CFrame       = original.CFrame
+            clone.Size         = original.Size
+            clone.Color        = Settings.ChamsColor
+            clone.Transparency = Settings.ChamsTransparency
+            clone.Reflectance  = Settings.ChamsReflectance
+
+            -- Update point light
+            local light = clone:FindFirstChildOfClass("PointLight")
+            if light then
+                light.Color      = Settings.GlowColor
+                light.Brightness = Settings.GlowBrightness
+                light.Range      = Settings.GlowRange
+            end
+        end
+    end
+
+    -- Update glow clones
+    for original, clone in pairs(self.GlowParts) do
+        if not original or not original.Parent then
+            clone:Destroy()
+            self.GlowParts[original] = nil
+        else
+            clone.CFrame       = original.CFrame
+            clone.Size         = original.Size + expand
+            clone.Color        = Settings.GlowColor
+            clone.Transparency = Settings.GlowTransparency
+        end
+    end
+end
+
+function ESPObject:DestroyChamsModel()
+    if self.ChamsModel then
+        self.ChamsModel:Destroy()
+        self.ChamsModel = nil
+    end
+    self.MetalParts = {}
+    self.GlowParts  = {}
+end
+
+-------------------------------------------------
+-- UPDATE
+-------------------------------------------------
+function ESPObject:Update()
+    local player = self.Player
+    if not player or not player.Parent then
+        self:Hide()
+        return
+    end
+
+    local char = player.Character
+    if not char then self:Hide() return end
+
+    local humanoid = char:FindFirstChildOfClass("Humanoid")
+    local rootPart = char:FindFirstChild("HumanoidRootPart") or char:FindFirstChild("Torso")
+    if not humanoid or not rootPart or humanoid.Health <= 0 then
+        self:Hide()
+        return
+    end
+
+    if isTeammate(player) then
+        self:Hide()
+        return
+    end
+
+    local dist = (rootPart.Position - Camera.CFrame.Position).Magnitude
+    if dist > Settings.MaxDistance then
+        self:Hide()
+        return
+    end
+
+    local screenPos, onScreen = worldToScreen(rootPart.Position)
+    if not onScreen then
+        self:Hide()
+        return
+    end
+
+    local head = char:FindFirstChild("Head")
+    if not head then self:Hide() return end
+
+    local headTop    = head.Position + Vector3.new(0, head.Size.Y / 2 + 0.5, 0)
+    local feetBottom = rootPart.Position - Vector3.new(0, 3, 0)
+
+    local top2D, topOn       = worldToScreen(headTop)
+    local bottom2D, bottomOn = worldToScreen(feetBottom)
+
+    if not topOn and not bottomOn then
+        self:Hide()
+        return
+    end
+
+    local height = math.abs(bottom2D.Y - top2D.Y)
+    local width  = height * 0.55
+
+    local boxTopLeft     = Vector2.new(top2D.X - width / 2, top2D.Y)
+    local boxTopRight    = Vector2.new(top2D.X + width / 2, top2D.Y)
+    local boxBottomLeft  = Vector2.new(top2D.X - width / 2, top2D.Y + height)
+    local boxBottomRight = Vector2.new(top2D.X + width / 2, top2D.Y + height)
+
+    -------------------------------------------------
+    -- BOX ESP
+    -------------------------------------------------
+    if Settings.BoxESP then
+        self.Box[1].From = boxTopLeft;      self.Box[1].To = boxTopRight;     self.Box[1].Visible = true
+        self.Box[2].From = boxTopRight;     self.Box[2].To = boxBottomRight;  self.Box[2].Visible = true
+        self.Box[3].From = boxBottomRight;  self.Box[3].To = boxBottomLeft;   self.Box[3].Visible = true
+        self.Box[4].From = boxBottomLeft;   self.Box[4].To = boxTopLeft;      self.Box[4].Visible = true
+        for i = 1, 4 do
+            self.Box[i].Color = Settings.BoxColor
+            self.Box[i].Thickness = Settings.BoxThickness
+        end
+    else
+        for i = 1, 4 do self.Box[i].Visible = false end
+    end
+
+    -------------------------------------------------
+    -- NAME ESP
+    -------------------------------------------------
+    if Settings.NameESP then
+        self.Name.Text     = player.DisplayName or player.Name
+        self.Name.Position = Vector2.new(top2D.X, boxTopLeft.Y - Settings.NameSize - 4)
+        self.Name.Color    = Settings.NameColor
+        self.Name.Size     = Settings.NameSize
+        self.Name.Visible  = true
+    else
+        self.Name.Visible = false
+    end
+
+    -------------------------------------------------
+    -- DISTANCE ESP
+    -------------------------------------------------
+    if Settings.DistanceESP then
+        self.Distance.Text     = string.format("[%d studs]", math.floor(dist))
+        self.Distance.Position = Vector2.new(bottom2D.X, boxBottomLeft.Y + 2)
+        self.Distance.Color    = Settings.DistanceColor
+        self.Distance.Visible  = true
+    else
+        self.Distance.Visible = false
+    end
+
+    -------------------------------------------------
+    -- HEALTH ESP
+    -------------------------------------------------
+    if Settings.HealthESP then
+        local healthPct = math.clamp(humanoid.Health / humanoid.MaxHealth, 0, 1)
+        local barTop    = boxTopLeft + Vector2.new(-6, 0)
+        local barBottom = boxBottomLeft + Vector2.new(-6, 0)
+        local barFill   = barBottom:Lerp(barTop, healthPct)
+
+        self.HealthBG.From  = barTop
+        self.HealthBG.To    = barBottom
+        self.HealthBG.Visible = true
+
+        self.HealthBar.From  = barBottom
+        self.HealthBar.To    = barFill
+        self.HealthBar.Color = lerpColor(Settings.HealthLow, Settings.HealthHigh, healthPct)
+        self.HealthBar.Visible = true
+    else
+        self.HealthBG.Visible  = false
+        self.HealthBar.Visible = false
+    end
+
+    -------------------------------------------------
+    -- SKELETON ESP
+    -------------------------------------------------
+    if Settings.SkeletonESP then
+        local bones = self:GetBones(char)
+        for i, bone in ipairs(bones) do
+            local line = self.Skeleton[i]
+            if line then
+                local p1 = char:FindFirstChild(bone[1])
+                local p2 = char:FindFirstChild(bone[2])
+                if p1 and p2 then
+                    local s1, on1 = worldToScreen(p1.Position)
+                    local s2, on2 = worldToScreen(p2.Position)
+                    if on1 and on2 then
+                        line.From    = s1
+                        line.To      = s2
+                        line.Color   = Settings.SkeletonColor
+                        line.Thickness = Settings.SkeletonThick
+                        line.Visible = true
+                    else
+                        line.Visible = false
+                    end
+                else
+                    line.Visible = false
+                end
+            end
+        end
+        for i = #bones + 1, #self.Skeleton do
+            self.Skeleton[i].Visible = false
+        end
+    else
+        for _, l in ipairs(self.Skeleton) do l.Visible = false end
+    end
+
+    -------------------------------------------------
+    -- DUAL LAYER CHAMS
+    -------------------------------------------------
+    if Settings.Chams then
+        self:UpdateChamsModel(char)
+    else
+        self:DestroyChamsModel()
+    end
+end
+
+function ESPObject:Hide()
+    for _, l in ipairs(self.Box)      do l.Visible = false end
+    for _, l in ipairs(self.Skeleton) do l.Visible = false end
+    self.Name.Visible      = false
+    self.Distance.Visible  = false
+    self.HealthBG.Visible  = false
+    self.HealthBar.Visible = false
+    self:DestroyChamsModel()
+end
+
+function ESPObject:Destroy()
+    self:Hide()
+    for _, l in ipairs(self.Box)      do l:Remove() end
+    for _, l in ipairs(self.Skeleton) do l:Remove() end
+    self.Name:Remove()
+    self.Distance:Remove()
+    self.HealthBG:Remove()
+    self.HealthBar:Remove()
+end
+
+-------------------------------------------------
+-- ESP MANAGER
+-------------------------------------------------
+local ESPObjects = {}
+
+local function addPlayer(player)
+    if player == LocalPlayer then return end
+    if ESPObjects[player] then return end
+    ESPObjects[player] = ESPObject.new(player)
+end
+
+local function removePlayer(player)
+    if ESPObjects[player] then
+        ESPObjects[player]:Destroy()
+        ESPObjects[player] = nil
+    end
+end
+
+for _, p in ipairs(Players:GetPlayers()) do
+    addPlayer(p)
+end
+Players.PlayerAdded:Connect(addPlayer)
+Players.PlayerRemoving:Connect(removePlayer)
+
+-------------------------------------------------
+-- RENDER LOOP
+-------------------------------------------------
+local connection
+connection = RunService.RenderStepped:Connect(function()
+    if not Settings.Enabled then
+        for _, obj in pairs(ESPObjects) do obj:Hide() end
+        return
+    end
+
+    for _, obj in pairs(ESPObjects) do
+        obj:Update()
+    end
+end)
+
+-------------------------------------------------
+-- TOGGLE KEYBIND (press INSERT to toggle)
+-------------------------------------------------
+local UserInputService = game:GetService("UserInputService")
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+    if input.KeyCode == Enum.KeyCode.Insert then
+        Settings.Enabled = not Settings.Enabled
+    end
+end)
+
+-------------------------------------------------
+-- CLEANUP ON SCRIPT RE-RUN
+-------------------------------------------------
+local function cleanup()
+    if connection then connection:Disconnect() end
+    for _, obj in pairs(ESPObjects) do
+        obj:Destroy()
+    end
+    table.clear(ESPObjects)
+    if ChamsFolder then
+        ChamsFolder:Destroy()
+    end
+end
+
+getgenv().ESP = {
+    Settings = Settings,
+    Cleanup  = cleanup,
+    Toggle   = function() Settings.Enabled = not Settings.Enabled end,
+}
+
+print("[ESP] Loaded - press INSERT to toggle")
+print("[ESP] Dual-layer metal + neon glow chams through walls")
