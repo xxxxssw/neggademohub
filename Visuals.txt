@@ -55,28 +55,51 @@ local FOVValue = nil -- the NumberValue inside Camera
 
 local function FindFOVValue()
     Camera = workspace.CurrentCamera
-    local fv = Camera:FindFirstChild("FOV")
-    if fv and (fv:IsA("NumberValue") or fv:IsA("IntValue")) then
-        FOVValue = fv
-        return
-    end
-    -- Fallback: search for any NumberValue named FOV
+    FOVValue = nil
+
+    -- Collect ALL children named "FOV"
+    local fovChildren = {}
     for _, child in Camera:GetChildren() do
         if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
-            FOVValue = child
-            return
+            table.insert(fovChildren, child)
         end
     end
-    FOVValue = nil
+
+    if #fovChildren == 0 then return end
+
+    -- Keep the first one, destroy duplicates
+    FOVValue = fovChildren[1]
+    for i = 2, #fovChildren do
+        pcall(function() fovChildren[i]:Destroy() end)
+    end
 end
 
--- Re-find when camera changes (respawn, spectate, etc)
+-- Kill any new FOV values the game creates (it re-adds duplicates)
+local function HookCameraChildren()
+    Camera = workspace.CurrentCamera
+    Camera.ChildAdded:Connect(function(child)
+        if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
+            -- If we already have one, this is a duplicate — kill it
+            if FOVValue and FOVValue.Parent and child ~= FOVValue then
+                task.defer(function() pcall(function() child:Destroy() end) end)
+            end
+            -- If our reference is dead, adopt this one
+            if not FOVValue or not FOVValue.Parent then
+                FOVValue = child
+            end
+        end
+    end)
+end
+
+-- Re-find + re-hook when camera changes (respawn, spectate)
 workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
     task.wait(0.1)
     FindFOVValue()
+    HookCameraChildren()
 end)
 
 FindFOVValue()
+HookCameraChildren()
 
 -- ═══════════════════════════════════════════
 -- ZOOM STATE
@@ -196,16 +219,30 @@ pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
 
 RunService:BindToRenderStep(RENDER, Enum.RenderPriority.Camera.Value + 1, function()
     if not S.Enabled then return end
+    Camera = workspace.CurrentCamera
 
     -- Re-find FOV value if lost (respawn etc)
-    if not FOVValue or not FOVValue.Parent then FindFOVValue() end
+    if not FOVValue or not FOVValue.Parent then FindFOVValue(); HookCameraChildren() end
 
-    -- FOV Override: write to the NumberValue
-    if S.FOVOverride and FOVValue then
-        if Zooming and S.ZoomEnabled then
-            FOVValue.Value = S.ZoomFOV
-        else
-            FOVValue.Value = S.FOV
+    -- FOV Override: force every frame
+    if S.FOVOverride then
+        local targetFOV = (Zooming and S.ZoomEnabled) and S.ZoomFOV or S.FOV
+
+        -- Write to the NumberValue
+        if FOVValue and FOVValue.Parent then
+            FOVValue.Value = targetFOV
+        end
+
+        -- Also force the property directly (belt and suspenders)
+        pcall(function() Camera.FieldOfView = targetFOV end)
+
+        -- Kill any duplicate FOV values the game sneaks in
+        for _, child in Camera:GetChildren() do
+            if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
+                if FOVValue and child ~= FOVValue then
+                    pcall(function() child:Destroy() end)
+                end
+            end
         end
     end
 
@@ -213,17 +250,31 @@ RunService:BindToRenderStep(RENDER, Enum.RenderPriority.Camera.Value + 1, functi
     RenderCH()
 end)
 
+-- Heartbeat backup: force FOV from server loop too
+-- Some games reset FOV between RenderStepped frames
+local hbConn = RunService.Heartbeat:Connect(function()
+    if not S.Enabled or not S.FOVOverride then return end
+    if FOVValue and FOVValue.Parent then
+        local targetFOV = (Zooming and S.ZoomEnabled) and S.ZoomFOV or S.FOV
+        if FOVValue.Value ~= targetFOV then
+            FOVValue.Value = targetFOV
+        end
+    end
+end)
+
 -- ═══════════════════════════════════════════
 -- RESTORE / CLEANUP
 -- ═══════════════════════════════════════════
 local function RestoreAll()
     if FOVValue and FOVValue.Parent then FOVValue.Value = S.BaseFOV end
+    pcall(function() Camera.FieldOfView = S.BaseFOV end)
     if CC and CC.Parent then CC:Destroy() end; CC = nil
     HideCH()
 end
 
 local function Cleanup()
     pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
+    pcall(function() hbConn:Disconnect() end)
     RestoreAll()
     for i = 1, 4 do CL[i]:Remove(); CO[i]:Remove() end
     CDot:Remove(); CDotOut:Remove(); CCirc:Remove(); CCircOut:Remove()
