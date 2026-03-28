@@ -1,50 +1,41 @@
 --[[
-    VISUALS v3 — Clean & Working
-    Only features that reliably work in executors.
+    VISUALS v4 — Clean
     
-    FOV fix: BindToRenderStep at Camera+1 priority
-    so it runs AFTER the game's camera controller.
+    FOV: Sets workspace.CurrentCamera.FOV.Value (NumberValue)
+    Zoom: Hold key to temporarily lower FOV
+    Crosshair: Cross / Dot / Circle / T modes
+    World Colors: Saturation / Contrast / Brightness
     
     Control via getgenv().Visuals.Settings
 ]]
 
-local Players   = game:GetService("Players")
-local Lighting  = game:GetService("Lighting")
+local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
-local Camera    = workspace.CurrentCamera
-local LP        = Players.LocalPlayer
+local UIS        = game:GetService("UserInputService")
+local Camera     = workspace.CurrentCamera
+local LP         = Players.LocalPlayer
 
 -- ═══════════════════════════════════════════
 -- SETTINGS
 -- ═══════════════════════════════════════════
 local S = {
-    Enabled         = true,
+    Enabled = true,
 
-    -- Lighting
-    Fullbright      = true,
-    RemoveFog       = true,
-    RemoveShadows   = true,
-    RemoveAtmosphere = true,
-    RemovePostFX    = true,
+    -- FOV Override (writes to Camera > FOV NumberValue)
+    FOVOverride   = true,
+    FOV           = 90,   -- base game FOV is 60
+    BaseFOV       = 60,
 
-    -- Time
-    ForceTime       = true,
-    TimeOfDay       = 12,
+    -- Zoom (hold key to zoom in)
+    ZoomEnabled   = false,
+    ZoomFOV       = 30,
+    ZoomKey       = Enum.KeyCode.C,
 
-    -- Night Vision (overrides world colors when on)
-    NightVision     = false,
-    NV_Brightness   = 3,
-    NV_Saturation   = -0.6,
-
-    -- World Colors
-    WorldColors     = false,
-    Saturation      = 0,
-    Contrast        = 0,
-    Brightness      = 0,
-
-    -- Camera
-    CustomFOV       = true,
-    FOV             = 90,
+    -- World Colors (ColorCorrectionEffect)
+    WorldColors   = false,
+    Saturation    = 0,
+    Contrast      = 0,
+    Brightness    = 0,
 
     -- Crosshair
     Crosshair       = true,
@@ -58,29 +49,61 @@ local S = {
 }
 
 -- ═══════════════════════════════════════════
--- BACKUP
+-- FOV VALUE FINDER
 -- ═══════════════════════════════════════════
-local Orig = {
-    Ambient    = Lighting.Ambient,
-    OutAmbient = Lighting.OutdoorAmbient,
-    Brightness = Lighting.Brightness,
-    ClockTime  = Lighting.ClockTime,
-    FogStart   = Lighting.FogStart,
-    FogEnd     = Lighting.FogEnd,
-    Shadows    = Lighting.GlobalShadows,
-    EnvDiff    = Lighting.EnvironmentDiffuseScale,
-    EnvSpec    = Lighting.EnvironmentSpecularScale,
-    FOV        = Camera.FieldOfView,
-}
+local FOVValue = nil -- the NumberValue inside Camera
+
+local function FindFOVValue()
+    Camera = workspace.CurrentCamera
+    local fv = Camera:FindFirstChild("FOV")
+    if fv and (fv:IsA("NumberValue") or fv:IsA("IntValue")) then
+        FOVValue = fv
+        return
+    end
+    -- Fallback: search for any NumberValue named FOV
+    for _, child in Camera:GetChildren() do
+        if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
+            FOVValue = child
+            return
+        end
+    end
+    FOVValue = nil
+end
+
+-- Re-find when camera changes (respawn, spectate, etc)
+workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+    task.wait(0.1)
+    FindFOVValue()
+end)
+
+FindFOVValue()
 
 -- ═══════════════════════════════════════════
--- COLOR CORRECTION (night vision + world colors)
+-- ZOOM STATE
 -- ═══════════════════════════════════════════
+local Zooming = false
+
+UIS.InputBegan:Connect(function(inp, gpe)
+    if gpe then return end
+    if S.ZoomEnabled and inp.KeyCode == S.ZoomKey then
+        Zooming = true
+    end
+end)
+
+UIS.InputEnded:Connect(function(inp)
+    if inp.KeyCode == S.ZoomKey then
+        Zooming = false
+    end
+end)
+
+-- ═══════════════════════════════════════════
+-- COLOR CORRECTION
+-- ═══════════════════════════════════════════
+local Lighting = game:GetService("Lighting")
 local CC = nil
 
 local function GetCC()
     if CC and CC.Parent then return CC end
-    -- kill stale
     for _, obj in Lighting:GetChildren() do
         if obj.Name == "VIS_CC" then obj:Destroy() end
     end
@@ -91,14 +114,7 @@ local function GetCC()
 end
 
 local function UpdateCC()
-    if S.NightVision then
-        local cc = GetCC()
-        cc.Brightness = S.NV_Brightness * 0.1
-        cc.Saturation = S.NV_Saturation
-        cc.Contrast   = 0.3
-        cc.TintColor  = Color3.fromRGB(120, 255, 120)
-        cc.Enabled    = true
-    elseif S.WorldColors then
+    if S.WorldColors then
         local cc = GetCC()
         cc.Brightness = S.Brightness
         cc.Saturation = S.Saturation
@@ -111,55 +127,20 @@ local function UpdateCC()
 end
 
 -- ═══════════════════════════════════════════
--- ATMOSPHERE + POSTFX STRIPPING
--- ═══════════════════════════════════════════
-local DisabledFX = {}
-
-local function StripEffects()
-    for _, obj in Lighting:GetDescendants() do
-        if S.RemoveAtmosphere and obj:IsA("Atmosphere") then
-            obj.Density = 0; obj.Offset = 0; obj.Glare = 0; obj.Haze = 0
-        end
-        if S.RemovePostFX then
-            if obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect") then
-                if obj.Enabled then
-                    obj.Enabled = false
-                    DisabledFX[obj] = true
-                end
-            end
-        end
-    end
-end
-
--- Auto-strip new effects the game adds
-Lighting.DescendantAdded:Connect(function(obj)
-    if not S.Enabled then return end
-    if S.RemoveAtmosphere and obj:IsA("Atmosphere") then
-        task.defer(function() obj.Density = 0; obj.Offset = 0; obj.Glare = 0; obj.Haze = 0 end)
-    end
-    if S.RemovePostFX and (obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect")) then
-        task.defer(function() obj.Enabled = false; DisabledFX[obj] = true end)
-    end
-end)
-
--- ═══════════════════════════════════════════
 -- CROSSHAIR (Drawing)
 -- ═══════════════════════════════════════════
--- Lines: used for Cross and T modes
-local CL = {} -- main lines
-local CO = {} -- outline lines
+local CL = {}
+local CO = {}
 for i = 1, 4 do
     local l = Drawing.new("Line"); l.Visible = false; l.Transparency = 1; l.ZIndex = 100; CL[i] = l
     local o = Drawing.new("Line"); o.Visible = false; o.Color = Color3.new(0,0,0); o.Transparency = 0.8; o.ZIndex = 99; CO[i] = o
 end
--- Dot
 local CDot = Drawing.new("Circle"); CDot.Visible = false; CDot.Filled = true; CDot.NumSides = 16; CDot.ZIndex = 101
 local CDotOut = Drawing.new("Circle"); CDotOut.Visible = false; CDotOut.Filled = false; CDotOut.Color = Color3.new(0,0,0); CDotOut.Thickness = 2; CDotOut.NumSides = 16; CDotOut.ZIndex = 100
--- Circle mode
 local CCirc = Drawing.new("Circle"); CCirc.Visible = false; CCirc.Filled = false; CCirc.NumSides = 40; CCirc.ZIndex = 100
 local CCircOut = Drawing.new("Circle"); CCircOut.Visible = false; CCircOut.Filled = false; CCircOut.Color = Color3.new(0,0,0); CCircOut.NumSides = 40; CCircOut.ZIndex = 99
 
-local function HideCrosshair()
+local function HideCH()
     for i = 1, 4 do CL[i].Visible = false; CO[i].Visible = false end
     CDot.Visible = false; CDotOut.Visible = false; CCirc.Visible = false; CCircOut.Visible = false
 end
@@ -173,131 +154,76 @@ local function SetLine(idx, x1, y1, x2, y2)
     end
 end
 
-local function RenderCrosshair()
-    if not S.Crosshair then HideCrosshair(); return end
-    HideCrosshair()
-
+local function RenderCH()
+    if not S.Crosshair then HideCH(); return end
+    HideCH()
     Camera = workspace.CurrentCamera
     local vp = Camera.ViewportSize
-    local cx, cy = math.floor(vp.X / 2), math.floor(vp.Y / 2)
+    local cx, cy = math.floor(vp.X/2), math.floor(vp.Y/2)
     local sz, gp = S.CrosshairSize, S.CrosshairGap
     local mode = S.CrosshairMode
 
     if mode == "Cross" then
-        SetLine(1, cx, cy-gp-sz, cx, cy-gp)       -- top
-        SetLine(2, cx, cy+gp,    cx, cy+gp+sz)     -- bottom
-        SetLine(3, cx-gp-sz, cy, cx-gp, cy)         -- left
-        SetLine(4, cx+gp, cy,    cx+gp+sz, cy)      -- right
+        SetLine(1, cx, cy-gp-sz, cx, cy-gp)
+        SetLine(2, cx, cy+gp, cx, cy+gp+sz)
+        SetLine(3, cx-gp-sz, cy, cx-gp, cy)
+        SetLine(4, cx+gp, cy, cx+gp+sz, cy)
     elseif mode == "T" then
-        SetLine(1, cx, cy+gp,     cx, cy+gp+sz)     -- bottom
-        SetLine(2, cx-gp-sz, cy,  cx-gp, cy)         -- left
-        SetLine(3, cx+gp, cy,     cx+gp+sz, cy)      -- right
+        SetLine(1, cx, cy+gp, cx, cy+gp+sz)
+        SetLine(2, cx-gp-sz, cy, cx-gp, cy)
+        SetLine(3, cx+gp, cy, cx+gp+sz, cy)
     elseif mode == "Circle" then
         CCirc.Position = Vector2.new(cx, cy); CCirc.Radius = sz
         CCirc.Color = S.CrosshairColor; CCirc.Thickness = S.CrosshairThick; CCirc.Visible = true
         if S.CrosshairOutline then
-            CCircOut.Position = Vector2.new(cx, cy); CCircOut.Radius = sz
-            CCircOut.Thickness = S.CrosshairThick + 2; CCircOut.Visible = true
+            CCircOut.Position = Vector2.new(cx, cy); CCircOut.Radius = sz; CCircOut.Thickness = S.CrosshairThick + 2; CCircOut.Visible = true
         end
     end
 
-    -- Center dot
     if S.CrosshairDot or mode == "Dot" then
         local r = mode == "Dot" and math.max(S.CrosshairThick + 1, 3) or S.CrosshairThick
         CDot.Position = Vector2.new(cx, cy); CDot.Radius = r; CDot.Color = S.CrosshairColor; CDot.Visible = true
-        if S.CrosshairOutline then
-            CDotOut.Position = Vector2.new(cx, cy); CDotOut.Radius = r + 1; CDotOut.Visible = true
-        end
+        if S.CrosshairOutline then CDotOut.Position = Vector2.new(cx, cy); CDotOut.Radius = r + 1; CDotOut.Visible = true end
     end
 end
 
 -- ═══════════════════════════════════════════
 -- MAIN LOOP
--- BindToRenderStep at Camera + 1 so we run
--- AFTER the game's camera controller.
--- This is why FOV now works — the game sets
--- FOV first, then we overwrite it.
+-- Runs at Camera+1 to overwrite game's FOV
 -- ═══════════════════════════════════════════
-local RENDER_NAME = "VIS_Render"
+local RENDER = "VIS_v4"
+pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
 
-pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
-
-RunService:BindToRenderStep(RENDER_NAME, Enum.RenderPriority.Camera.Value + 1, function()
+RunService:BindToRenderStep(RENDER, Enum.RenderPriority.Camera.Value + 1, function()
     if not S.Enabled then return end
-    Camera = workspace.CurrentCamera
 
-    -- Fullbright (re-applied every frame — games constantly reset these)
-    if S.Fullbright then
-        Lighting.Ambient = Color3.fromRGB(200, 200, 200)
-        Lighting.OutdoorAmbient = Color3.fromRGB(200, 200, 200)
-        Lighting.Brightness = S.NightVision and S.NV_Brightness or 2
-        Lighting.EnvironmentDiffuseScale = 1
-        Lighting.EnvironmentSpecularScale = 1
+    -- Re-find FOV value if lost (respawn etc)
+    if not FOVValue or not FOVValue.Parent then FindFOVValue() end
+
+    -- FOV Override: write to the NumberValue
+    if S.FOVOverride and FOVValue then
+        if Zooming and S.ZoomEnabled then
+            FOVValue.Value = S.ZoomFOV
+        else
+            FOVValue.Value = S.FOV
+        end
     end
 
-    -- Fog
-    if S.RemoveFog then
-        Lighting.FogStart = 0
-        Lighting.FogEnd = 9e7
-    end
-
-    -- Shadows
-    if S.RemoveShadows then
-        Lighting.GlobalShadows = false
-    end
-
-    -- Time
-    if S.ForceTime then
-        Lighting.ClockTime = S.TimeOfDay
-    end
-
-    -- FOV — the key fix: this runs AFTER the game's camera update
-    if S.CustomFOV then
-        Camera.FieldOfView = S.FOV
-    end
-
-    -- Color correction
     UpdateCC()
-
-    -- Crosshair
-    RenderCrosshair()
+    RenderCH()
 end)
 
--- Initial strip (one-time)
-StripEffects()
-
 -- ═══════════════════════════════════════════
--- RESTORE
+-- RESTORE / CLEANUP
 -- ═══════════════════════════════════════════
 local function RestoreAll()
-    Lighting.Ambient = Orig.Ambient
-    Lighting.OutdoorAmbient = Orig.OutAmbient
-    Lighting.Brightness = Orig.Brightness
-    Lighting.ClockTime = Orig.ClockTime
-    Lighting.FogStart = Orig.FogStart
-    Lighting.FogEnd = Orig.FogEnd
-    Lighting.GlobalShadows = Orig.Shadows
-    Lighting.EnvironmentDiffuseScale = Orig.EnvDiff
-    Lighting.EnvironmentSpecularScale = Orig.EnvSpec
-    Camera.FieldOfView = Orig.FOV
-
-    -- Re-enable stripped effects
-    for obj, _ in DisabledFX do
-        pcall(function() obj.Enabled = true end)
-    end
-    DisabledFX = {}
-
-    -- Kill our CC
+    if FOVValue and FOVValue.Parent then FOVValue.Value = S.BaseFOV end
     if CC and CC.Parent then CC:Destroy() end; CC = nil
-
-    HideCrosshair()
+    HideCH()
 end
 
--- ═══════════════════════════════════════════
--- CLEANUP
--- ═══════════════════════════════════════════
 local function Cleanup()
-    pcall(function() RunService:UnbindFromRenderStep(RENDER_NAME) end)
+    pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
     RestoreAll()
     for i = 1, 4 do CL[i]:Remove(); CO[i]:Remove() end
     CDot:Remove(); CDotOut:Remove(); CCirc:Remove(); CCircOut:Remove()
@@ -307,12 +233,9 @@ end
 -- API
 -- ═══════════════════════════════════════════
 getgenv().Visuals = {
-    Settings = S,
-    Cleanup  = Cleanup,
-    Restore  = RestoreAll,
-    Restrip  = StripEffects,
-    Toggle   = function()
-        S.Enabled = not S.Enabled
-        if not S.Enabled then RestoreAll() else StripEffects() end
-    end,
+    Settings  = S,
+    Cleanup   = Cleanup,
+    Restore   = RestoreAll,
+    FindFOV   = FindFOVValue,
+    Toggle    = function() S.Enabled = not S.Enabled; if not S.Enabled then RestoreAll() end end,
 }
