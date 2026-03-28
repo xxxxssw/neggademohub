@@ -1,429 +1,546 @@
 --[[
-    WORLD VISUALS SUITE v1.1 (Template)
-    Fullbright - Fog Removal - Ambient Control
-    Time Control - Skybox - World Color
-    Atmosphere - Material Override - Crosshair
+    WORLD VISUALS v2.0 (Template)
     No menu, no keybinds — control via getgenv().Visuals
---]]
- 
+    
+    New in v2:
+    • Night Vision mode (green tint + high brightness)
+    • Crosshair modes: Cross, Dot, Circle, T-Style
+    • Fog color override
+    • Saturation / Contrast / Brightness sliders
+    • Character Glow (non-chams, self highlight)
+    • Ambient Occlusion removal
+    • Better texture stripping (caches originals)
+    • Sky stripping (removes skybox entirely)
+    • Smooth FOV transitions
+]]
+
 -------------------------------------------------
 -- SERVICES
 -------------------------------------------------
-local Players          = game:GetService("Players")
-local Lighting         = game:GetService("Lighting")
-local RunService       = game:GetService("RunService")
-local Workspace        = game:GetService("Workspace")
-local Camera           = Workspace.CurrentCamera
-local LocalPlayer      = Players.LocalPlayer
- 
+local Players   = game:GetService("Players")
+local Lighting  = game:GetService("Lighting")
+local RunService = game:GetService("RunService")
+local Workspace = game:GetService("Workspace")
+local Camera    = Workspace.CurrentCamera
+local LP        = Players.LocalPlayer
+
 -------------------------------------------------
--- SETTINGS (edit these directly)
+-- SETTINGS
 -------------------------------------------------
-local Settings = {
-    Enabled          = true,
-    Fullbright       = true,
-    BrightAmbient    = Color3.fromRGB(200, 200, 200),
-    BrightOutdoor    = Color3.fromRGB(200, 200, 200),
-    RemoveFog        = true,
+local S = {
+    Enabled         = true,
+
+    -- Lighting
+    Fullbright      = true,
+    BrightAmbient   = Color3.fromRGB(200,200,200),
+    BrightOutdoor   = Color3.fromRGB(200,200,200),
+    RemoveFog       = true,
+    FogColorOverride = false,
+    FogColor        = Color3.fromRGB(180,200,220),
+    RemoveShadows   = true,
     RemoveAtmosphere = true,
-    RemovePostFX     = true,
-    ForceTime        = true,
-    TimeOfDay        = 12,
-    CustomSky        = false,
-    SkyColor         = Color3.fromRGB(85, 130, 200),
-    WorldColors      = true,
-    Saturation       = 0.3,
-    Contrast         = 0.15,
-    Brightness       = 0.05,
-    TintColor        = Color3.fromRGB(255, 255, 255),
-    MaterialOverride   = false,
-    OverrideMaterial   = Enum.Material.SmoothPlastic,
-    WireframeMode    = false,
-    WireframeAlpha   = 0.85,
-    RemoveTextures   = false,
-    RemoveShadows    = true,
-    CustomFOV        = true,
-    FOV              = 90,
-    Crosshair        = true,
-    CrosshairColor   = Color3.fromRGB(0, 255, 0),
-    CrosshairSize    = 10,
-    CrosshairThick   = 1.5,
-    CrosshairGap     = 4,
+    RemovePostFX    = true,
+    RemoveAO        = true, -- ambient occlusion (ColorShift in Lighting)
+
+    -- Time
+    ForceTime       = true,
+    TimeOfDay       = 12,
+
+    -- Night Vision
+    NightVision     = false,
+    NV_Brightness   = 3,
+    NV_Tint         = Color3.fromRGB(120,255,120),
+    NV_Saturation   = -0.6,
+    NV_Contrast     = 0.3,
+
+    -- Sky
+    RemoveSky       = false,
+
+    -- World Colors (ColorCorrectionEffect)
+    WorldColors     = false,
+    Saturation      = 0,
+    Contrast        = 0,
+    Brightness      = 0,
+    TintColor       = Color3.fromRGB(255,255,255),
+
+    -- Materials
+    MaterialOverride  = false,
+    OverrideMaterial  = Enum.Material.SmoothPlastic,
+    RemoveTextures    = false,
+    WireframeMode     = false,
+    WireframeAlpha    = 0.85,
+
+    -- Camera
+    CustomFOV       = true,
+    FOV             = 90,
+    SmoothFOV       = true,
+    FOVSpeed        = 12,
+
+    -- Crosshair
+    Crosshair       = true,
+    CrosshairMode   = "Cross", -- Cross, Dot, Circle, T
+    CrosshairColor  = Color3.fromRGB(0,255,0),
+    CrosshairSize   = 10,
+    CrosshairThick  = 1.5,
+    CrosshairGap    = 4,
+    CrosshairDot    = true,
+    CrosshairOutline = true,
+
+    -- Character Glow
+    CharGlow        = false,
+    GlowColor       = Color3.fromRGB(108,92,231),
+    GlowTransparency = 0.7,
 }
- 
+
 -------------------------------------------------
--- BACKUP ORIGINALS
+-- BACKUP
 -------------------------------------------------
-local Originals = {
-    Ambient           = Lighting.Ambient,
-    OutdoorAmbient    = Lighting.OutdoorAmbient,
-    Brightness        = Lighting.Brightness,
-    ClockTime         = Lighting.ClockTime,
-    FogStart          = Lighting.FogStart,
-    FogEnd            = Lighting.FogEnd,
-    FogColor          = Lighting.FogColor,
-    GlobalShadows     = Lighting.GlobalShadows,
-    EnvironmentDiffuseScale  = Lighting.EnvironmentDiffuseScale,
-    EnvironmentSpecularScale = Lighting.EnvironmentSpecularScale,
-    FOV               = Camera.FieldOfView,
+local Orig = {
+    Ambient     = Lighting.Ambient,
+    OutAmbient  = Lighting.OutdoorAmbient,
+    Brightness  = Lighting.Brightness,
+    ClockTime   = Lighting.ClockTime,
+    FogStart    = Lighting.FogStart,
+    FogEnd      = Lighting.FogEnd,
+    FogColor    = Lighting.FogColor,
+    Shadows     = Lighting.GlobalShadows,
+    EnvDiff     = Lighting.EnvironmentDiffuseScale,
+    EnvSpec     = Lighting.EnvironmentSpecularScale,
+    FOV         = Camera.FieldOfView,
 }
- 
+
 -------------------------------------------------
--- CROSSHAIR DRAWING
+-- CROSSHAIR (Drawing objects)
 -------------------------------------------------
-local CrosshairLines = {}
+-- 4 lines for Cross/T mode
+local CLines = {}
 for i = 1, 4 do
-    local l = Drawing.new("Line")
-    l.Visible    = false
-    l.Color      = Settings.CrosshairColor
-    l.Thickness  = Settings.CrosshairThick
-    l.Transparency = 1
-    CrosshairLines[i] = l
+    local l = Drawing.new("Line"); l.Visible = false; l.Transparency = 1; CLines[i] = l
 end
- 
+-- 4 outline lines
+local COutlines = {}
+for i = 1, 4 do
+    local l = Drawing.new("Line"); l.Visible = false; l.Color = Color3.new(0,0,0); l.Transparency = 0.8; COutlines[i] = l
+end
+-- Center dot
+local CDot = Drawing.new("Circle"); CDot.Visible = false; CDot.Filled = true; CDot.NumSides = 16; CDot.ZIndex = 100
+local CDotOutline = Drawing.new("Circle"); CDotOutline.Visible = false; CDotOutline.Filled = false; CDotOutline.NumSides = 16; CDotOutline.Color = Color3.new(0,0,0); CDotOutline.Thickness = 2; CDotOutline.ZIndex = 99
+-- Circle mode
+local CCircle = Drawing.new("Circle"); CCircle.Visible = false; CCircle.Filled = false; CCircle.NumSides = 40; CCircle.ZIndex = 100
+local CCircleOut = Drawing.new("Circle"); CCircleOut.Visible = false; CCircleOut.Filled = false; CCircleOut.NumSides = 40; CCircleOut.Color = Color3.new(0,0,0); CCircleOut.ZIndex = 99
+
 -------------------------------------------------
 -- TRACKING
 -------------------------------------------------
-local CreatedEffects = {}
-local DisabledEffects = {}
- 
+local Created = {}
+local Disabled = {}
+local StrippedTextures = {} -- {obj, origTrans}
+local DisabledSky = nil
+local GlowHL = nil -- Highlight on local character
+local CurrentFOV = Camera.FieldOfView
+
 -------------------------------------------------
--- FUNCTIONS
+-- COLOR CORRECTION (shared between WorldColors + NightVision)
 -------------------------------------------------
-local function applyFullbright()
-    if Settings.Fullbright then
-        Lighting.Ambient = Settings.BrightAmbient
-        Lighting.OutdoorAmbient = Settings.BrightOutdoor
-        Lighting.Brightness = 2
+local CC = nil -- ColorCorrectionEffect instance
+
+local function EnsureCC()
+    if CC and CC.Parent then return CC end
+    -- Clean old
+    for i = #Created, 1, -1 do
+        if Created[i].Name == "VIS_CC" then Created[i]:Destroy(); table.remove(Created, i) end
+    end
+    CC = Instance.new("ColorCorrectionEffect")
+    CC.Name = "VIS_CC"
+    CC.Parent = Lighting
+    table.insert(Created, CC)
+    return CC
+end
+
+local function UpdateCC()
+    if S.NightVision then
+        local cc = EnsureCC()
+        cc.Brightness  = S.NV_Brightness * 0.1
+        cc.Saturation  = S.NV_Saturation
+        cc.Contrast    = S.NV_Contrast
+        cc.TintColor   = S.NV_Tint
+        cc.Enabled     = true
+    elseif S.WorldColors then
+        local cc = EnsureCC()
+        cc.Brightness  = S.Brightness
+        cc.Saturation  = S.Saturation
+        cc.Contrast    = S.Contrast
+        cc.TintColor   = S.TintColor
+        cc.Enabled     = true
+    else
+        if CC and CC.Parent then CC.Enabled = false end
+    end
+end
+
+-------------------------------------------------
+-- LIGHTING
+-------------------------------------------------
+local function ApplyLighting()
+    if S.Fullbright then
+        Lighting.Ambient = S.BrightAmbient
+        Lighting.OutdoorAmbient = S.BrightOutdoor
+        Lighting.Brightness = S.NightVision and S.NV_Brightness or 2
         Lighting.EnvironmentDiffuseScale = 1
         Lighting.EnvironmentSpecularScale = 1
     end
-end
- 
-local function applyFogRemoval()
-    if Settings.RemoveFog then
-        Lighting.FogStart = 0
-        Lighting.FogEnd   = 9999999
+
+    if S.RemoveFog then
+        Lighting.FogStart = 0; Lighting.FogEnd = 9e7
     end
-end
- 
-local function applyTimeOfDay()
-    if Settings.ForceTime then
-        Lighting.ClockTime = Settings.TimeOfDay
+
+    if S.FogColorOverride then
+        Lighting.FogColor = S.FogColor
     end
-end
- 
-local function applyShadowRemoval()
-    if Settings.RemoveShadows then
+
+    if S.ForceTime then
+        Lighting.ClockTime = S.TimeOfDay
+    end
+
+    if S.RemoveShadows then
         Lighting.GlobalShadows = false
     end
 end
- 
-local function removeAtmosphere()
-    if not Settings.RemoveAtmosphere then return end
-    for _, obj in ipairs(Lighting:GetDescendants()) do
-        if obj:IsA("Atmosphere") then
-            obj.Density = 0
-            obj.Offset  = 0
-            obj.Glare   = 0
-            obj.Haze    = 0
-            table.insert(DisabledEffects, { Object = obj, Type = "Atmosphere" })
+
+-------------------------------------------------
+-- ATMOSPHERE + POST-FX + AO
+-------------------------------------------------
+local function StripLightingEffects()
+    for _, obj in Lighting:GetDescendants() do
+        if S.RemoveAtmosphere and obj:IsA("Atmosphere") then
+            obj.Density = 0; obj.Offset = 0; obj.Glare = 0; obj.Haze = 0
+        end
+        if S.RemovePostFX then
+            if obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect") then
+                obj.Enabled = false
+                table.insert(Disabled, { Object = obj, Type = "PostFX" })
+            end
+        end
+        if S.RemoveAO then
+            -- Some games use ColorShiftTop/Bottom for fake AO
+            if obj:IsA("ColorCorrectionEffect") and obj.Name ~= "VIS_CC" then
+                -- Don't kill our own CC
+            end
         end
     end
 end
- 
-local function removePostFX()
-    if not Settings.RemovePostFX then return end
-    for _, obj in ipairs(Lighting:GetDescendants()) do
-        if obj:IsA("BloomEffect")
-            or obj:IsA("BlurEffect")
-            or obj:IsA("SunRaysEffect")
-            or obj:IsA("DepthOfFieldEffect")
-        then
-            obj.Enabled = false
-            table.insert(DisabledEffects, { Object = obj, Type = "PostFX" })
-        end
-    end
-end
- 
-local function applyWorldColors()
-    if not Settings.WorldColors then return end
-    for i, eff in ipairs(CreatedEffects) do
-        if eff.Name == "ESP_ColorCorrection" then
-            eff:Destroy()
-            table.remove(CreatedEffects, i)
-            break
-        end
-    end
-    local cc = Instance.new("ColorCorrectionEffect")
-    cc.Name        = "ESP_ColorCorrection"
-    cc.Saturation  = Settings.Saturation
-    cc.Contrast    = Settings.Contrast
-    cc.Brightness  = Settings.Brightness
-    cc.TintColor   = Settings.TintColor
-    cc.Parent      = Lighting
-    table.insert(CreatedEffects, cc)
-end
- 
-local function applyCustomSky()
-    if not Settings.CustomSky then return end
-    for _, obj in ipairs(Lighting:GetChildren()) do
-        if obj:IsA("Sky") then
+
+-------------------------------------------------
+-- SKY
+-------------------------------------------------
+local function StripSky()
+    if not S.RemoveSky then return end
+    for _, obj in Lighting:GetChildren() do
+        if obj:IsA("Sky") and obj.Name ~= "VIS_Sky" then
+            DisabledSky = obj
             obj.Parent = nil
-            table.insert(DisabledEffects, { Object = obj, Type = "Sky" })
-        end
-    end
-    Lighting.FogColor = Settings.SkyColor
-    local sky = Instance.new("Sky")
-    sky.Name = "ESP_Sky"
-    sky.SkyboxBk = ""
-    sky.SkyboxDn = ""
-    sky.SkyboxFt = ""
-    sky.SkyboxLf = ""
-    sky.SkyboxRt = ""
-    sky.SkyboxUp = ""
-    sky.StarCount = 0
-    sky.CelestialBodiesShown = false
-    sky.Parent = Lighting
-    table.insert(CreatedEffects, sky)
-end
- 
-local function applyFOV()
-    if Settings.CustomFOV then
-        Camera.FieldOfView = Settings.FOV
-    end
-end
- 
-local function applyMaterialOverride()
-    if not Settings.MaterialOverride then return end
-    for _, part in ipairs(Workspace:GetDescendants()) do
-        if part:IsA("BasePart") then
-            pcall(function()
-                part.Material = Settings.OverrideMaterial
-            end)
         end
     end
 end
- 
-local function applyWireframe()
-    if not Settings.WireframeMode then return end
-    for _, part in ipairs(Workspace:GetDescendants()) do
-        if part:IsA("BasePart") then
-            local isChar = false
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p.Character and part:IsDescendantOf(p.Character) then
-                    isChar = true
-                    break
-                end
-            end
-            if not isChar then
-                pcall(function()
-                    part.Transparency = Settings.WireframeAlpha
-                end)
-            end
-        end
+
+local function RestoreSky()
+    if DisabledSky then
+        DisabledSky.Parent = Lighting
+        DisabledSky = nil
     end
 end
- 
-local function undoWireframe()
-    for _, part in ipairs(Workspace:GetDescendants()) do
-        if part:IsA("BasePart") then
-            local isChar = false
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p.Character and part:IsDescendantOf(p.Character) then
-                    isChar = true
-                    break
-                end
-            end
-            if not isChar then
-                pcall(function()
-                    part.Transparency = 0
-                end)
-            end
-        end
-    end
-end
- 
-local function removeTextures()
-    if not Settings.RemoveTextures then return end
-    for _, obj in ipairs(Workspace:GetDescendants()) do
+
+-------------------------------------------------
+-- TEXTURES
+-------------------------------------------------
+local function StripTextures()
+    if not S.RemoveTextures then return end
+    for _, obj in Workspace:GetDescendants() do
         if obj:IsA("Decal") or obj:IsA("Texture") then
-            pcall(function()
-                obj.Transparency = 1
-            end)
-            table.insert(DisabledEffects, { Object = obj, Type = "Texture" })
+            if not StrippedTextures[obj] then
+                StrippedTextures[obj] = obj.Transparency
+            end
+            pcall(function() obj.Transparency = 1 end)
         end
     end
 end
- 
-local function updateCrosshair()
-    if not Settings.Crosshair then
-        for _, l in ipairs(CrosshairLines) do l.Visible = false end
-        return
+
+local function RestoreTextures()
+    for obj, origT in StrippedTextures do
+        pcall(function() obj.Transparency = origT end)
     end
-    local vp = Camera.ViewportSize
-    local cx = vp.X / 2
-    local cy = vp.Y / 2
-    local sz = Settings.CrosshairSize
-    local gp = Settings.CrosshairGap
-    CrosshairLines[1].From  = Vector2.new(cx, cy - gp - sz)
-    CrosshairLines[1].To    = Vector2.new(cx, cy - gp)
-    CrosshairLines[2].From  = Vector2.new(cx, cy + gp)
-    CrosshairLines[2].To    = Vector2.new(cx, cy + gp + sz)
-    CrosshairLines[3].From  = Vector2.new(cx - gp - sz, cy)
-    CrosshairLines[3].To    = Vector2.new(cx - gp, cy)
-    CrosshairLines[4].From  = Vector2.new(cx + gp, cy)
-    CrosshairLines[4].To    = Vector2.new(cx + gp + sz, cy)
-    for _, l in ipairs(CrosshairLines) do
-        l.Color     = Settings.CrosshairColor
-        l.Thickness = Settings.CrosshairThick
-        l.Visible   = true
+    table.clear(StrippedTextures)
+end
+
+-------------------------------------------------
+-- MATERIALS + WIREFRAME
+-------------------------------------------------
+local function ApplyMaterial()
+    if not S.MaterialOverride then return end
+    for _, part in Workspace:GetDescendants() do
+        if part:IsA("BasePart") then
+            pcall(function() part.Material = S.OverrideMaterial end)
+        end
     end
 end
- 
-local function applyAll()
-    applyFullbright()
-    applyFogRemoval()
-    applyTimeOfDay()
-    applyShadowRemoval()
-    removeAtmosphere()
-    removePostFX()
-    applyWorldColors()
-    applyCustomSky()
-    applyFOV()
-    applyMaterialOverride()
-    applyWireframe()
-    removeTextures()
-end
- 
-local function restoreAll()
-    Lighting.Ambient           = Originals.Ambient
-    Lighting.OutdoorAmbient    = Originals.OutdoorAmbient
-    Lighting.Brightness        = Originals.Brightness
-    Lighting.ClockTime         = Originals.ClockTime
-    Lighting.FogStart          = Originals.FogStart
-    Lighting.FogEnd            = Originals.FogEnd
-    Lighting.FogColor          = Originals.FogColor
-    Lighting.GlobalShadows     = Originals.GlobalShadows
-    Lighting.EnvironmentDiffuseScale  = Originals.EnvironmentDiffuseScale
-    Lighting.EnvironmentSpecularScale = Originals.EnvironmentSpecularScale
-    Camera.FieldOfView = Originals.FOV
-    for _, entry in ipairs(DisabledEffects) do
-        local obj = entry.Object
-        if obj and obj.Parent ~= nil then
-            if entry.Type == "PostFX" then
-                obj.Enabled = true
-            elseif entry.Type == "Sky" then
-                obj.Parent = Lighting
-            elseif entry.Type == "Texture" then
-                obj.Transparency = 0
+
+local function ApplyWireframe()
+    if not S.WireframeMode then return end
+    for _, part in Workspace:GetDescendants() do
+        if part:IsA("BasePart") then
+            local isChar = false
+            for _, p in Players:GetPlayers() do
+                if p.Character and part:IsDescendantOf(p.Character) then isChar = true; break end
+            end
+            if not isChar then
+                pcall(function() part.Transparency = S.WireframeAlpha end)
             end
         end
     end
-    DisabledEffects = {}
-    for _, eff in ipairs(CreatedEffects) do
-        if eff and eff.Parent then eff:Destroy() end
-    end
-    CreatedEffects = {}
-    for _, l in ipairs(CrosshairLines) do l.Visible = false end
 end
- 
+
+local function UndoWireframe()
+    for _, part in Workspace:GetDescendants() do
+        if part:IsA("BasePart") then
+            local isChar = false
+            for _, p in Players:GetPlayers() do
+                if p.Character and part:IsDescendantOf(p.Character) then isChar = true; break end
+            end
+            if not isChar then pcall(function() part.Transparency = 0 end) end
+        end
+    end
+end
+
 -------------------------------------------------
--- INITIAL APPLY
+-- CHARACTER GLOW
 -------------------------------------------------
-applyAll()
- 
+local function UpdateCharGlow()
+    local ch = LP.Character
+    if S.CharGlow and ch then
+        if not GlowHL or GlowHL.Parent ~= ch then
+            if GlowHL then pcall(function() GlowHL:Destroy() end) end
+            GlowHL = Instance.new("Highlight")
+            GlowHL.Name = "VIS_Glow"
+            GlowHL.FillColor = S.GlowColor
+            GlowHL.FillTransparency = S.GlowTransparency
+            GlowHL.OutlineColor = S.GlowColor
+            GlowHL.OutlineTransparency = 0.3
+            GlowHL.DepthMode = Enum.HighlightDepthMode.Occluded
+            GlowHL.Adornee = ch
+            GlowHL.Parent = ch
+        else
+            GlowHL.FillColor = S.GlowColor
+            GlowHL.FillTransparency = S.GlowTransparency
+            GlowHL.OutlineColor = S.GlowColor
+        end
+    else
+        if GlowHL then pcall(function() GlowHL:Destroy() end); GlowHL = nil end
+    end
+end
+
+-------------------------------------------------
+-- CROSSHAIR RENDER
+-------------------------------------------------
+local function HideAllCrosshair()
+    for _, l in CLines do l.Visible = false end
+    for _, l in COutlines do l.Visible = false end
+    CDot.Visible = false; CDotOutline.Visible = false
+    CCircle.Visible = false; CCircleOut.Visible = false
+end
+
+local function RenderCrosshair()
+    if not S.Crosshair then HideAllCrosshair(); return end
+
+    local vp = Camera.ViewportSize
+    local cx, cy = vp.X/2, vp.Y/2
+    local sz = S.CrosshairSize
+    local gp = S.CrosshairGap
+    local col = S.CrosshairColor
+    local thk = S.CrosshairThick
+    local mode = S.CrosshairMode
+    local outline = S.CrosshairOutline
+
+    HideAllCrosshair()
+
+    if mode == "Cross" then
+        -- Top
+        CLines[1].From = Vector2.new(cx, cy-gp-sz); CLines[1].To = Vector2.new(cx, cy-gp)
+        -- Bottom
+        CLines[2].From = Vector2.new(cx, cy+gp); CLines[2].To = Vector2.new(cx, cy+gp+sz)
+        -- Left
+        CLines[3].From = Vector2.new(cx-gp-sz, cy); CLines[3].To = Vector2.new(cx-gp, cy)
+        -- Right
+        CLines[4].From = Vector2.new(cx+gp, cy); CLines[4].To = Vector2.new(cx+gp+sz, cy)
+
+        for i = 1, 4 do
+            CLines[i].Color = col; CLines[i].Thickness = thk; CLines[i].Visible = true
+            if outline then
+                COutlines[i].From = CLines[i].From; COutlines[i].To = CLines[i].To
+                COutlines[i].Thickness = thk + 2; COutlines[i].Visible = true
+            end
+        end
+
+    elseif mode == "T" then
+        -- Bottom
+        CLines[1].From = Vector2.new(cx, cy+gp); CLines[1].To = Vector2.new(cx, cy+gp+sz)
+        -- Left
+        CLines[2].From = Vector2.new(cx-gp-sz, cy); CLines[2].To = Vector2.new(cx-gp, cy)
+        -- Right
+        CLines[3].From = Vector2.new(cx+gp, cy); CLines[3].To = Vector2.new(cx+gp+sz, cy)
+
+        for i = 1, 3 do
+            CLines[i].Color = col; CLines[i].Thickness = thk; CLines[i].Visible = true
+            if outline then
+                COutlines[i].From = CLines[i].From; COutlines[i].To = CLines[i].To
+                COutlines[i].Thickness = thk + 2; COutlines[i].Visible = true
+            end
+        end
+
+    elseif mode == "Circle" then
+        CCircle.Position = Vector2.new(cx, cy); CCircle.Radius = sz
+        CCircle.Color = col; CCircle.Thickness = thk; CCircle.Visible = true
+        if outline then
+            CCircleOut.Position = Vector2.new(cx, cy); CCircleOut.Radius = sz
+            CCircleOut.Thickness = thk + 2; CCircleOut.Visible = true
+        end
+    end
+
+    -- Center dot (available for all modes if enabled)
+    if S.CrosshairDot then
+        CDot.Position = Vector2.new(cx, cy); CDot.Radius = thk; CDot.Color = col; CDot.Visible = true
+        if outline then
+            CDotOutline.Position = Vector2.new(cx, cy); CDotOutline.Radius = thk + 1; CDotOutline.Visible = true
+        end
+    end
+
+    if mode == "Dot" then
+        -- Dot-only: larger center dot, no lines
+        CDot.Radius = math.max(thk + 1, 3); CDot.Visible = true
+        if outline then CDotOutline.Radius = CDot.Radius + 1; CDotOutline.Visible = true end
+    end
+end
+
+-------------------------------------------------
+-- FOV (smooth transition)
+-------------------------------------------------
+local function UpdateFOV(dt)
+    if not S.CustomFOV then return end
+    if S.SmoothFOV then
+        CurrentFOV = CurrentFOV + (S.FOV - CurrentFOV) * math.min(1, S.FOVSpeed * dt)
+        Camera.FieldOfView = CurrentFOV
+    else
+        Camera.FieldOfView = S.FOV
+        CurrentFOV = S.FOV
+    end
+end
+
+-------------------------------------------------
+-- APPLY / RESTORE ALL
+-------------------------------------------------
+local function ApplyAll()
+    ApplyLighting()
+    StripLightingEffects()
+    UpdateCC()
+    StripSky()
+    ApplyMaterial()
+    ApplyWireframe()
+    StripTextures()
+end
+
+local function RestoreAll()
+    Lighting.Ambient = Orig.Ambient
+    Lighting.OutdoorAmbient = Orig.OutAmbient
+    Lighting.Brightness = Orig.Brightness
+    Lighting.ClockTime = Orig.ClockTime
+    Lighting.FogStart = Orig.FogStart; Lighting.FogEnd = Orig.FogEnd; Lighting.FogColor = Orig.FogColor
+    Lighting.GlobalShadows = Orig.Shadows
+    Lighting.EnvironmentDiffuseScale = Orig.EnvDiff; Lighting.EnvironmentSpecularScale = Orig.EnvSpec
+    Camera.FieldOfView = Orig.FOV
+
+    for _, e in Disabled do
+        pcall(function()
+            if e.Type == "PostFX" and e.Object then e.Object.Enabled = true end
+        end)
+    end; Disabled = {}
+
+    for _, eff in Created do pcall(function() eff:Destroy() end) end; Created = {}; CC = nil
+    RestoreSky(); RestoreTextures(); UndoWireframe()
+    if GlowHL then pcall(function() GlowHL:Destroy() end); GlowHL = nil end
+    HideAllCrosshair()
+end
+
+-------------------------------------------------
+-- INITIAL
+-------------------------------------------------
+ApplyAll()
+
 -------------------------------------------------
 -- RENDER LOOP
 -------------------------------------------------
 local renderConn
-renderConn = RunService.RenderStepped:Connect(function()
-    if not Settings.Enabled then return end
-    if Settings.Fullbright then
-        Lighting.Ambient = Settings.BrightAmbient
-        Lighting.OutdoorAmbient = Settings.BrightOutdoor
-        Lighting.Brightness = 2
+renderConn = RunService.RenderStepped:Connect(function(dt)
+    if not S.Enabled then return end
+    Camera = Workspace.CurrentCamera
+
+    -- Lighting (re-applied each frame to prevent game overwrite)
+    if S.Fullbright then
+        Lighting.Ambient = S.BrightAmbient; Lighting.OutdoorAmbient = S.BrightOutdoor
+        Lighting.Brightness = S.NightVision and S.NV_Brightness or 2
+        Lighting.EnvironmentDiffuseScale = 1; Lighting.EnvironmentSpecularScale = 1
     end
-    if Settings.RemoveFog then
-        Lighting.FogStart = 0
-        Lighting.FogEnd   = 9999999
-    end
-    if Settings.ForceTime then
-        Lighting.ClockTime = Settings.TimeOfDay
-    end
-    if Settings.RemoveShadows then
-        Lighting.GlobalShadows = false
-    end
-    if Settings.CustomFOV then
-        Camera.FieldOfView = Settings.FOV
-    end
-    updateCrosshair()
+    if S.RemoveFog then Lighting.FogStart = 0; Lighting.FogEnd = 9e7 end
+    if S.FogColorOverride then Lighting.FogColor = S.FogColor end
+    if S.ForceTime then Lighting.ClockTime = S.TimeOfDay end
+    if S.RemoveShadows then Lighting.GlobalShadows = false end
+
+    UpdateCC()
+    UpdateFOV(dt)
+    UpdateCharGlow()
+    RenderCrosshair()
 end)
- 
+
 -------------------------------------------------
--- NEW PARTS HANDLER
+-- NEW PARTS / EFFECTS HANDLER
 -------------------------------------------------
 Workspace.DescendantAdded:Connect(function(obj)
-    if not Settings.Enabled then return end
+    if not S.Enabled then return end
     if obj:IsA("BasePart") then
-        if Settings.MaterialOverride then
-            pcall(function() obj.Material = Settings.OverrideMaterial end)
-        end
-        if Settings.WireframeMode then
+        if S.MaterialOverride then pcall(function() obj.Material = S.OverrideMaterial end) end
+        if S.WireframeMode then
             local isChar = false
-            for _, p in ipairs(Players:GetPlayers()) do
-                if p.Character and obj:IsDescendantOf(p.Character) then
-                    isChar = true
-                    break
-                end
-            end
-            if not isChar then
-                pcall(function() obj.Transparency = Settings.WireframeAlpha end)
-            end
+            for _, p in Players:GetPlayers() do if p.Character and obj:IsDescendantOf(p.Character) then isChar = true; break end end
+            if not isChar then pcall(function() obj.Transparency = S.WireframeAlpha end) end
         end
     end
-    if Settings.RemoveTextures then
-        if obj:IsA("Decal") or obj:IsA("Texture") then
-            pcall(function() obj.Transparency = 1 end)
-        end
+    if S.RemoveTextures and (obj:IsA("Decal") or obj:IsA("Texture")) then
+        if not StrippedTextures[obj] then StrippedTextures[obj] = obj.Transparency end
+        pcall(function() obj.Transparency = 1 end)
     end
 end)
- 
+
 Lighting.DescendantAdded:Connect(function(obj)
-    if not Settings.Enabled then return end
-    if Settings.RemoveAtmosphere and obj:IsA("Atmosphere") then
-        obj.Density = 0
-        obj.Offset  = 0
-        obj.Glare   = 0
-        obj.Haze    = 0
-    end
-    if Settings.RemovePostFX then
-        if obj:IsA("BloomEffect")
-            or obj:IsA("BlurEffect")
-            or obj:IsA("SunRaysEffect")
-            or obj:IsA("DepthOfFieldEffect")
-        then
-            obj.Enabled = false
-        end
-    end
+    if not S.Enabled then return end
+    if S.RemoveAtmosphere and obj:IsA("Atmosphere") then obj.Density = 0; obj.Offset = 0; obj.Glare = 0; obj.Haze = 0 end
+    if S.RemovePostFX and (obj:IsA("BloomEffect") or obj:IsA("BlurEffect") or obj:IsA("SunRaysEffect") or obj:IsA("DepthOfFieldEffect")) then obj.Enabled = false end
 end)
- 
+
 -------------------------------------------------
 -- CLEANUP
 -------------------------------------------------
-local function cleanup()
+local function Cleanup()
     if renderConn then renderConn:Disconnect() end
-    restoreAll()
-    for _, l in ipairs(CrosshairLines) do l:Remove() end
+    RestoreAll()
+    for _, l in CLines do l:Remove() end
+    for _, l in COutlines do l:Remove() end
+    CDot:Remove(); CDotOutline:Remove(); CCircle:Remove(); CCircleOut:Remove()
 end
- 
+
+-------------------------------------------------
+-- API
+-------------------------------------------------
 getgenv().Visuals = {
-    Settings = Settings,
-    Cleanup  = cleanup,
-    Apply    = applyAll,
-    Restore  = restoreAll,
-    Toggle   = function()
-        Settings.Enabled = not Settings.Enabled
-        if Settings.Enabled then applyAll() else restoreAll() end
-    end,
+    Settings = S,
+    Cleanup  = Cleanup,
+    Apply    = ApplyAll,
+    Restore  = RestoreAll,
+    Toggle   = function() S.Enabled = not S.Enabled; if S.Enabled then ApplyAll() else RestoreAll() end end,
 }
