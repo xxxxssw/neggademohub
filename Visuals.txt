@@ -1,9 +1,9 @@
 --[[
-    VISUALS v4 — Clean
+    VISUALS v5
     
-    FOV: Sets workspace.CurrentCamera.FOV.Value (NumberValue)
-    Zoom: Hold key to temporarily lower FOV
-    Crosshair: Cross / Dot / Circle / T modes
+    Speed Hack: WalkSpeed override
+    Viewmodel Chams: Highlight on Camera.FirstPersonRig
+    Crosshair: Cross / Dot / Circle / T
     World Colors: Saturation / Contrast / Brightness
     
     Control via getgenv().Visuals.Settings
@@ -12,6 +12,7 @@
 local Players    = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UIS        = game:GetService("UserInputService")
+local Lighting   = game:GetService("Lighting")
 local Camera     = workspace.CurrentCamera
 local LP         = Players.LocalPlayer
 
@@ -21,108 +22,167 @@ local LP         = Players.LocalPlayer
 local S = {
     Enabled = true,
 
-    -- FOV Override (writes to Camera > FOV NumberValue)
-    FOVOverride   = true,
-    FOV           = 90,   -- base game FOV is 60
-    BaseFOV       = 60,
+    -- Speed Hack
+    SpeedHack    = false,
+    WalkSpeed    = 25,   -- default game speed is 16
+    BaseSpeed    = 16,
 
-    -- Zoom (hold key to zoom in)
-    ZoomEnabled   = false,
-    ZoomFOV       = 30,
-    ZoomKey       = Enum.KeyCode.C,
+    -- Viewmodel Chams (Camera > FirstPersonRig)
+    VMChams          = false,
+    VMChamsColor     = Color3.fromRGB(108, 92, 231),
+    VMChamsFill      = 0.5,   -- fill transparency (0 = solid, 1 = invisible)
+    VMChamsOutline   = 0,     -- outline transparency
+    VMChamsOutColor  = Color3.fromRGB(255, 255, 255),
+    VMChamsGunOnly   = false, -- only highlight the gun, not arms
 
     -- World Colors (ColorCorrectionEffect)
-    WorldColors   = false,
-    Saturation    = 0,
-    Contrast      = 0,
-    Brightness    = 0,
+    WorldColors  = false,
+    Saturation   = 0,
+    Contrast     = 0,
+    Brightness   = 0,
 
     -- Crosshair
-    Crosshair       = true,
-    CrosshairMode   = "Cross", -- Cross, Dot, Circle, T
-    CrosshairColor  = Color3.fromRGB(0, 255, 0),
-    CrosshairSize   = 10,
-    CrosshairThick  = 1.5,
-    CrosshairGap    = 4,
-    CrosshairDot    = true,
+    Crosshair        = true,
+    CrosshairMode    = "Cross",
+    CrosshairColor   = Color3.fromRGB(0, 255, 0),
+    CrosshairSize    = 10,
+    CrosshairThick   = 1.5,
+    CrosshairGap     = 4,
+    CrosshairDot     = true,
     CrosshairOutline = true,
 }
 
 -- ═══════════════════════════════════════════
--- FOV VALUE FINDER
+-- VIEWMODEL CHAMS
+-- Targets: workspace.CurrentCamera.FirstPersonRig
+-- Contains: gun model (M870, AK-47, etc), Head, Arms
+-- We put a Highlight on the whole rig or just the gun
 -- ═══════════════════════════════════════════
-local FOVValue = nil -- the NumberValue inside Camera
+local VMHighlight = nil      -- Highlight on full rig
+local VMGunHighlight = nil   -- Highlight on gun only (when GunOnly mode)
+local LastRigRef = nil
 
-local function FindFOVValue()
+local function GetFirstPersonRig()
     Camera = workspace.CurrentCamera
-    FOVValue = nil
+    return Camera and Camera:FindFirstChild("FirstPersonRig")
+end
 
-    -- Collect ALL children named "FOV"
-    local fovChildren = {}
-    for _, child in Camera:GetChildren() do
-        if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
-            table.insert(fovChildren, child)
+-- Find the gun model inside FirstPersonRig
+-- It's the child that ISN'T a body part, Humanoid, Shirt, Pants, etc
+local BodyPartNames = {
+    Head = true, ["Left Arm"] = true, ["Right Arm"] = true,
+    ["Left Leg"] = true, ["Right Leg"] = true, Torso = true,
+    HumanoidRootPart = true, Humanoid = true, Shirt = true,
+    Pants = true, ["Body Colors"] = true, Animate = true,
+    -- R15
+    UpperTorso = true, LowerTorso = true, LeftUpperArm = true,
+    LeftLowerArm = true, LeftHand = true, RightUpperArm = true,
+    RightLowerArm = true, RightHand = true,
+}
+
+local function FindGunModel(rig)
+    if not rig then return nil end
+    for _, child in rig:GetChildren() do
+        if child:IsA("Model") or child:IsA("Tool") or child:IsA("Accessory") then
+            return child
+        end
+        -- Also check: anything that's not a known body part and has descendants (likely the gun)
+        if not BodyPartNames[child.Name] and not child:IsA("Humanoid") and not child:IsA("Shirt") and not child:IsA("Pants") and not child:IsA("BodyColors") then
+            if child:IsA("BasePart") or child:IsA("MeshPart") or (#child:GetChildren() > 0) then
+                return child
+            end
         end
     end
+    return nil
+end
 
-    if #fovChildren == 0 then return end
+local function CleanVMChams()
+    if VMHighlight then pcall(function() VMHighlight:Destroy() end); VMHighlight = nil end
+    if VMGunHighlight then pcall(function() VMGunHighlight:Destroy() end); VMGunHighlight = nil end
+    LastRigRef = nil
+end
 
-    -- Keep the first one, destroy duplicates
-    FOVValue = fovChildren[1]
-    for i = 2, #fovChildren do
-        pcall(function() fovChildren[i]:Destroy() end)
+local function UpdateVMChams()
+    if not S.VMChams then
+        CleanVMChams()
+        return
+    end
+
+    local rig = GetFirstPersonRig()
+    if not rig then
+        CleanVMChams()
+        return
+    end
+
+    if S.VMChamsGunOnly then
+        -- Gun-only mode: highlight just the weapon
+        if VMHighlight then pcall(function() VMHighlight:Destroy() end); VMHighlight = nil end
+
+        local gun = FindGunModel(rig)
+        if not gun then
+            if VMGunHighlight then pcall(function() VMGunHighlight:Destroy() end); VMGunHighlight = nil end
+            return
+        end
+
+        if not VMGunHighlight or VMGunHighlight.Parent ~= gun then
+            if VMGunHighlight then pcall(function() VMGunHighlight:Destroy() end) end
+            VMGunHighlight = Instance.new("Highlight")
+            VMGunHighlight.Name = "VIS_VMGun"
+            VMGunHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            VMGunHighlight.Adornee = gun
+            VMGunHighlight.Parent = gun
+        end
+
+        VMGunHighlight.FillColor = S.VMChamsColor
+        VMGunHighlight.FillTransparency = S.VMChamsFill
+        VMGunHighlight.OutlineColor = S.VMChamsOutColor
+        VMGunHighlight.OutlineTransparency = S.VMChamsOutline
+    else
+        -- Full rig mode: highlight everything (gun + arms)
+        if VMGunHighlight then pcall(function() VMGunHighlight:Destroy() end); VMGunHighlight = nil end
+
+        if not VMHighlight or VMHighlight.Parent ~= rig or LastRigRef ~= rig then
+            if VMHighlight then pcall(function() VMHighlight:Destroy() end) end
+            VMHighlight = Instance.new("Highlight")
+            VMHighlight.Name = "VIS_VM"
+            VMHighlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+            VMHighlight.Adornee = rig
+            VMHighlight.Parent = rig
+            LastRigRef = rig
+        end
+
+        VMHighlight.FillColor = S.VMChamsColor
+        VMHighlight.FillTransparency = S.VMChamsFill
+        VMHighlight.OutlineColor = S.VMChamsOutColor
+        VMHighlight.OutlineTransparency = S.VMChamsOutline
     end
 end
 
--- Kill any new FOV values the game creates (it re-adds duplicates)
-local function HookCameraChildren()
-    Camera = workspace.CurrentCamera
-    Camera.ChildAdded:Connect(function(child)
-        if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
-            -- If we already have one, this is a duplicate — kill it
-            if FOVValue and FOVValue.Parent and child ~= FOVValue then
-                task.defer(function() pcall(function() child:Destroy() end) end)
-            end
-            -- If our reference is dead, adopt this one
-            if not FOVValue or not FOVValue.Parent then
-                FOVValue = child
-            end
-        end
-    end)
+-- ═══════════════════════════════════════════
+-- SPEED HACK
+-- ═══════════════════════════════════════════
+local function UpdateSpeed()
+    if not S.SpeedHack then return end
+    local ch = LP.Character
+    if not ch then return end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = S.WalkSpeed
+    end
 end
 
--- Re-find + re-hook when camera changes (respawn, spectate)
-workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
-    task.wait(0.1)
-    FindFOVValue()
-    HookCameraChildren()
-end)
-
-FindFOVValue()
-HookCameraChildren()
-
--- ═══════════════════════════════════════════
--- ZOOM STATE
--- ═══════════════════════════════════════════
-local Zooming = false
-
-UIS.InputBegan:Connect(function(inp, gpe)
-    if gpe then return end
-    if S.ZoomEnabled and inp.KeyCode == S.ZoomKey then
-        Zooming = true
+local function RestoreSpeed()
+    local ch = LP.Character
+    if not ch then return end
+    local hum = ch:FindFirstChildOfClass("Humanoid")
+    if hum then
+        hum.WalkSpeed = S.BaseSpeed
     end
-end)
-
-UIS.InputEnded:Connect(function(inp)
-    if inp.KeyCode == S.ZoomKey then
-        Zooming = false
-    end
-end)
+end
 
 -- ═══════════════════════════════════════════
 -- COLOR CORRECTION
 -- ═══════════════════════════════════════════
-local Lighting = game:GetService("Lighting")
 local CC = nil
 
 local function GetCC()
@@ -152,8 +212,7 @@ end
 -- ═══════════════════════════════════════════
 -- CROSSHAIR (Drawing)
 -- ═══════════════════════════════════════════
-local CL = {}
-local CO = {}
+local CL, CO = {}, {}
 for i = 1, 4 do
     local l = Drawing.new("Line"); l.Visible = false; l.Transparency = 1; l.ZIndex = 100; CL[i] = l
     local o = Drawing.new("Line"); o.Visible = false; o.Color = Color3.new(0,0,0); o.Transparency = 0.8; o.ZIndex = 99; CO[i] = o
@@ -182,7 +241,7 @@ local function RenderCH()
     HideCH()
     Camera = workspace.CurrentCamera
     local vp = Camera.ViewportSize
-    local cx, cy = math.floor(vp.X/2), math.floor(vp.Y/2)
+    local cx, cy = math.floor(vp.X / 2), math.floor(vp.Y / 2)
     local sz, gp = S.CrosshairSize, S.CrosshairGap
     local mode = S.CrosshairMode
 
@@ -212,69 +271,32 @@ end
 
 -- ═══════════════════════════════════════════
 -- MAIN LOOP
--- Runs at Camera+1 to overwrite game's FOV
 -- ═══════════════════════════════════════════
-local RENDER = "VIS_v4"
+local RENDER = "VIS_v5"
 pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
 
 RunService:BindToRenderStep(RENDER, Enum.RenderPriority.Camera.Value + 1, function()
     if not S.Enabled then return end
     Camera = workspace.CurrentCamera
 
-    -- Re-find FOV value if lost (respawn etc)
-    if not FOVValue or not FOVValue.Parent then FindFOVValue(); HookCameraChildren() end
-
-    -- FOV Override: force every frame
-    if S.FOVOverride then
-        local targetFOV = (Zooming and S.ZoomEnabled) and S.ZoomFOV or S.FOV
-
-        -- Write to the NumberValue
-        if FOVValue and FOVValue.Parent then
-            FOVValue.Value = targetFOV
-        end
-
-        -- Also force the property directly (belt and suspenders)
-        pcall(function() Camera.FieldOfView = targetFOV end)
-
-        -- Kill any duplicate FOV values the game sneaks in
-        for _, child in Camera:GetChildren() do
-            if child.Name == "FOV" and (child:IsA("NumberValue") or child:IsA("IntValue")) then
-                if FOVValue and child ~= FOVValue then
-                    pcall(function() child:Destroy() end)
-                end
-            end
-        end
-    end
-
+    UpdateSpeed()
+    UpdateVMChams()
     UpdateCC()
     RenderCH()
-end)
-
--- Heartbeat backup: force FOV from server loop too
--- Some games reset FOV between RenderStepped frames
-local hbConn = RunService.Heartbeat:Connect(function()
-    if not S.Enabled or not S.FOVOverride then return end
-    if FOVValue and FOVValue.Parent then
-        local targetFOV = (Zooming and S.ZoomEnabled) and S.ZoomFOV or S.FOV
-        if FOVValue.Value ~= targetFOV then
-            FOVValue.Value = targetFOV
-        end
-    end
 end)
 
 -- ═══════════════════════════════════════════
 -- RESTORE / CLEANUP
 -- ═══════════════════════════════════════════
 local function RestoreAll()
-    if FOVValue and FOVValue.Parent then FOVValue.Value = S.BaseFOV end
-    pcall(function() Camera.FieldOfView = S.BaseFOV end)
+    RestoreSpeed()
+    CleanVMChams()
     if CC and CC.Parent then CC:Destroy() end; CC = nil
     HideCH()
 end
 
 local function Cleanup()
     pcall(function() RunService:UnbindFromRenderStep(RENDER) end)
-    pcall(function() hbConn:Disconnect() end)
     RestoreAll()
     for i = 1, 4 do CL[i]:Remove(); CO[i]:Remove() end
     CDot:Remove(); CDotOut:Remove(); CCirc:Remove(); CCircOut:Remove()
@@ -284,9 +306,8 @@ end
 -- API
 -- ═══════════════════════════════════════════
 getgenv().Visuals = {
-    Settings  = S,
-    Cleanup   = Cleanup,
-    Restore   = RestoreAll,
-    FindFOV   = FindFOVValue,
-    Toggle    = function() S.Enabled = not S.Enabled; if not S.Enabled then RestoreAll() end end,
+    Settings = S,
+    Cleanup  = Cleanup,
+    Restore  = RestoreAll,
+    Toggle   = function() S.Enabled = not S.Enabled; if not S.Enabled then RestoreAll() end end,
 }
